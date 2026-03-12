@@ -9,6 +9,10 @@
     "type": "git",
     "url": "https://github.com/TechTeem/vrchat-api-typescript.git"
   },
+  "homepage": "https://github.com/TechTeem/vrchat-api-typescript",
+  "bugs": {
+    "url": "https://github.com/TechTeem/vrchat-api-typescript/issues"
+  },
   "keywords": [
     "vrchat",
     "api",
