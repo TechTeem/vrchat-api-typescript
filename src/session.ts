@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHmac } from "node:crypto";
 
 import {
   VRChatApiClient as GeneratedVRChatApiClient,
@@ -55,12 +56,25 @@ export interface VRChatLoginWithTotpOptions extends VRChatLoginOptions {
   totpCode: string;
 }
 
+export interface TotpGenerateOptions {
+  algorithm?: "SHA1" | "SHA256" | "SHA512";
+  digits?: number;
+  period?: number;
+  timestamp?: number;
+}
+
+export interface VRChatLoginWithTotpSecretOptions extends VRChatLoginOptions {
+  totp?: TotpGenerateOptions;
+  totpSecret: string;
+}
+
 export interface VRChatTwoFactorOptions {
   code: string;
   type: TwoFactorAuthType;
 }
 
 const COOKIE_PAIR_SEPARATOR = "; ";
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 const splitCookieHeader = (cookieHeader: string): Array<string> => {
   return cookieHeader
@@ -344,6 +358,68 @@ const setUserAgentHeader = (headers: Headers, userAgent?: string): void => {
   }
 };
 
+const decodeBase32 = (value: string): Buffer => {
+  const normalizedValue = value.toUpperCase().replace(/[^A-Z2-7]/g, "");
+  if (!normalizedValue) {
+    throw new Error("TOTP secret is empty or not valid base32.");
+  }
+
+  let bits = "";
+
+  for (const character of normalizedValue) {
+    const index = BASE32_ALPHABET.indexOf(character);
+    if (index === -1) {
+      throw new Error("TOTP secret contains invalid base32 characters.");
+    }
+
+    bits += index.toString(2).padStart(5, "0");
+  }
+
+  const bytes: Array<number> = [];
+  for (let index = 0; index + 8 <= bits.length; index += 8) {
+    bytes.push(Number.parseInt(bits.slice(index, index + 8), 2));
+  }
+
+  return Buffer.from(bytes);
+};
+
+export const generateTotpCode = (
+  secret: string,
+  options: TotpGenerateOptions = {},
+): string => {
+  const {
+    algorithm = "SHA1",
+    digits = 6,
+    period = 30,
+    timestamp = Date.now(),
+  } = options;
+
+  if (digits <= 0) {
+    throw new Error("TOTP digits must be greater than zero.");
+  }
+
+  if (period <= 0) {
+    throw new Error("TOTP period must be greater than zero.");
+  }
+
+  const counter = Math.floor(timestamp / 1000 / period);
+  const counterBuffer = Buffer.alloc(8);
+  counterBuffer.writeBigUInt64BE(BigInt(counter));
+
+  const digest = createHmac(algorithm.toLowerCase(), decodeBase32(secret))
+    .update(counterBuffer)
+    .digest();
+
+  const offset = digest[digest.length - 1] & 0x0f;
+  const code =
+    ((digest[offset] & 0x7f) << 24) |
+    ((digest[offset + 1] & 0xff) << 16) |
+    ((digest[offset + 2] & 0xff) << 8) |
+    (digest[offset + 3] & 0xff);
+
+  return String(code % 10 ** digits).padStart(digits, "0");
+};
+
 const defaultDataOptions = {
   responseStyle: "fields" as const,
   throwOnError: true as const,
@@ -471,6 +547,15 @@ export class VRChatSessionClient {
     return currentUser;
   }
 
+  async loginWithTotpSecret(
+    options: VRChatLoginWithTotpSecretOptions,
+  ): Promise<CurrentUser> {
+    return this.loginWithTotp({
+      ...options,
+      totpCode: generateTotpCode(options.totpSecret, options.totp),
+    });
+  }
+
   restoreFromCookieHeader(cookieHeader: string): void {
     this.cookieJar.import(cookieHeader);
   }
@@ -495,6 +580,13 @@ export class VRChatSessionClient {
         body: { code },
       }),
     );
+  }
+
+  async verify2FaWithSecret(
+    secret: string,
+    options?: TotpGenerateOptions,
+  ): Promise<Verify2FaResponse> {
+    return this.verify2Fa(generateTotpCode(secret, options));
   }
 
   async verify2FaEmailCode(code: string): Promise<Verify2FaEmailCodeResponse> {

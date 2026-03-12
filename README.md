@@ -97,6 +97,30 @@ const user = await session.loginWithTotp({
 console.log(user.displayName);
 ```
 
+If you store the base32 TOTP secret instead of the current 6-digit code, you can generate the OTP dynamically:
+
+```ts
+import { VRChatSessionClient } from "vrchat-api-typescript";
+
+const session = new VRChatSessionClient();
+const user = await session.loginWithTotpSecret({
+  username: process.env.VRCHAT_USERNAME!,
+  password: process.env.VRCHAT_PASSWORD!,
+  totpSecret: process.env.VRCHAT_TOTP_SECRET!,
+  userAgent: "my-vrchat-tool/1.0.0 (+mailto:you@example.com)",
+});
+
+console.log(user.displayName);
+```
+
+You can also generate a code yourself and pass it wherever needed:
+
+```ts
+import { generateTotpCode } from "vrchat-api-typescript";
+
+const code = generateTotpCode(process.env.VRCHAT_TOTP_SECRET!);
+```
+
 ## Example script
 
 Run the local example after setting the required environment variables:
@@ -105,7 +129,8 @@ Run the local example after setting the required environment variables:
 export VRCHAT_USERNAME="your-username"
 export VRCHAT_PASSWORD="your-password"
 export VRCHAT_TOTP_CODE="123456"
+export VRCHAT_TOTP_SECRET="BASE32SECRET"
 npm run example:session
 ```
 
-The example stores cookies in `.vrchat-session.json` so repeated runs can reuse the same session.
+The example stores cookies in `.vrchat-session.json` so repeated runs can reuse the same session. If both `VRCHAT_TOTP_CODE` and `VRCHAT_TOTP_SECRET` are set, the secret-based flow is used.

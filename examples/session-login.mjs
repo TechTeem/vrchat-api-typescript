@@ -35,6 +35,7 @@ const writeCookieCache = async (cookies) => {
 const username = process.env.VRCHAT_USERNAME;
 const password = process.env.VRCHAT_PASSWORD;
 const totpCode = process.env.VRCHAT_TOTP_CODE;
+const totpSecret = process.env.VRCHAT_TOTP_SECRET;
 const userAgent =
   "vrchat-api-typescript-example/1.0.0 (+https://github.com/ferdyy/vrchat-api-typescript)";
 
@@ -69,18 +70,25 @@ if (
   isTwoFactorChallenge(loginResult) &&
   loginResult.requiresTwoFactorAuth.includes("totp")
 ) {
-  if (!totpCode) {
+  if (!totpCode && !totpSecret) {
     throw new Error(
-      "VRCHAT_TOTP_CODE is required when the account requires TOTP.",
+      "VRCHAT_TOTP_CODE or VRCHAT_TOTP_SECRET is required when the account requires TOTP.",
     );
   }
 
-  const user = await session.loginWithTotp({
-    username,
-    password,
-    totpCode,
-    userAgent,
-  });
+  const user = totpSecret
+    ? await session.loginWithTotpSecret({
+        username,
+        password,
+        totpSecret,
+        userAgent,
+      })
+    : await session.loginWithTotp({
+        username,
+        password,
+        totpCode,
+        userAgent,
+      });
   await writeCookieCache(session.exportCookies());
   console.log(`Logged in with TOTP as ${user.displayName}`);
   process.exit(0);
