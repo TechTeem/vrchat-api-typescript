@@ -1,0 +1,47 @@
+{
+  "name": "vrchat-api-typescript",
+  "version": "0.1.0",
+  "description": "TypeScript SDK and type definitions generated from the VRChat API OpenAPI specification.",
+  "keywords": [
+    "vrchat",
+    "api",
+    "typescript",
+    "sdk",
+    "openapi"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "openapi.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "rm -rf dist src/generated openapi.json",
+    "spec:update": "node ./scripts/update-spec.mjs",
+    "generate": "npm run spec:update && openapi-ts",
+    "build": "tsup",
+    "example:session": "npm run build && node ./examples/session-login.mjs",
+    "prepack": "npm run generate && npm run build"
+  },
+  "devDependencies": {
+    "@hey-api/openapi-ts": "^0.88.0",
+    "@types/node": "^24.10.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}
