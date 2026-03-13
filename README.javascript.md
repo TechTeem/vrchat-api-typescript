@@ -1,6 +1,6 @@
-# vrchat-api-typescript
+# vrchat-api-typescript for JavaScript
 
-TypeScript SDK and type definitions for the VRChat Web API, generated from the community-maintained VRChat OpenAPI specification.
+JavaScript usage is fully supported. This package ships runtime builds for both ESM and CommonJS, plus TypeScript definitions for editors that can consume them.
 
 ## Source of truth
 
@@ -11,31 +11,32 @@ This package is generated from the VRChat API specification published by the `vr
 
 Important: this API documentation is community-driven and is not officially supported by VRChat. Endpoint behavior may change without notice.
 
-## Important note! EXTREMELY IMPORTANT!
-
-This package is created using copilot by me. It's is used in my own project and will be constantly updated if there is any issues found. Other than this current section that is manually typed by me, the entire library is created by copilot, going through the above source of truth and compiling this typescript library from scratch.
-
 ## Install
 
 ```bash
 npm install vrchat-api-typescript
 ```
 
-JavaScript usage is fully supported. If you are using this package from plain JavaScript, see [README.javascript.md](https://github.com/TechTeem/vrchat-api-typescript/blob/main/README.javascript.md).
+## Module formats
 
-## Regenerate from upstream
+ESM:
 
-```bash
-npm install
-npm run generate
-npm run build
+```js
+import { VRChatApiClient, VRChatSessionClient } from "vrchat-api-typescript";
 ```
 
-`npm run generate` downloads the latest bundled `openapi.json` release artifact from the upstream specification repository and regenerates the SDK.
+CommonJS:
+
+```js
+const {
+  VRChatApiClient,
+  VRChatSessionClient,
+} = require("vrchat-api-typescript");
+```
 
 ## Usage
 
-```ts
+```js
 import { VRChatApiClient, VRCHAT_SPEC_VERSION } from "vrchat-api-typescript";
 
 const client = new VRChatApiClient({
@@ -53,7 +54,7 @@ Most VRChat API calls require an authenticated session. In the examples below, m
 
 For low-level SDK usage, call `VRChatApiClient` methods directly:
 
-```ts
+```js
 import { VRChatApiClient } from "vrchat-api-typescript";
 
 const client = new VRChatApiClient({
@@ -72,7 +73,7 @@ console.log(configResult.data.clientApiKey);
 
 If you want typed data plus access to the raw response, keep using `responseStyle: "fields"`:
 
-```ts
+```js
 import { VRChatApiClient } from "vrchat-api-typescript";
 
 const client = new VRChatApiClient();
@@ -93,9 +94,9 @@ if (worldResult.error) {
 }
 ```
 
-For authenticated API usage, call generated endpoints through `session.api` after restoring or creating a session:
+For authenticated API usage, call generated endpoints through `session.api`:
 
-```ts
+```js
 import { VRChatSessionClient } from "vrchat-api-typescript";
 
 const session = new VRChatSessionClient();
@@ -119,7 +120,7 @@ for (const world of worlds.data) {
 
 You can use the same pattern for direct lookups by ID:
 
-```ts
+```js
 import { VRChatSessionClient } from "vrchat-api-typescript";
 
 const session = new VRChatSessionClient();
@@ -141,7 +142,7 @@ The package also includes a handwritten session wrapper for login, cookie persis
 
 VRChat expects a descriptive `User-Agent`. The session client now sends one by default, but for production usage you should set your own app-specific value.
 
-```ts
+```js
 import {
   VRChatSessionClient,
   isCurrentUser,
@@ -150,8 +151,8 @@ import {
 
 const session = new VRChatSessionClient();
 const login = await session.login({
-  username: process.env.VRCHAT_USERNAME!,
-  password: process.env.VRCHAT_PASSWORD!,
+  username: process.env.VRCHAT_USERNAME,
+  password: process.env.VRCHAT_PASSWORD,
   userAgent: "my-vrchat-tool/1.0.0 (+mailto:you@example.com)",
 });
 
@@ -163,7 +164,7 @@ if (
   isTwoFactorChallenge(login) &&
   login.requiresTwoFactorAuth.includes("totp")
 ) {
-  await session.verify2Fa(process.env.VRCHAT_TOTP_CODE!);
+  await session.verify2Fa(process.env.VRCHAT_TOTP_CODE);
 }
 
 const cookies = session.exportCookies();
@@ -177,7 +178,7 @@ Use `exportCookies()` or `getCookieHeader()` to persist the session between rest
 
 If you want to persist a session to a specific file and restore it later:
 
-```ts
+```js
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { VRChatSessionClient } from "vrchat-api-typescript";
@@ -191,8 +192,8 @@ if (existsSync(sessionFilePath)) {
 }
 
 const login = await session.login({
-  username: process.env.VRCHAT_USERNAME!,
-  password: process.env.VRCHAT_PASSWORD!,
+  username: process.env.VRCHAT_USERNAME,
+  password: process.env.VRCHAT_PASSWORD,
   userAgent: "my-vrchat-tool/1.0.0 (+mailto:you@example.com)",
 });
 
@@ -207,7 +208,7 @@ console.log(login);
 
 If you prefer to store the raw cookie header instead of the cookie object:
 
-```ts
+```js
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { VRChatSessionClient } from "vrchat-api-typescript";
@@ -226,14 +227,14 @@ writeFileSync(cookieHeaderPath, session.getCookieHeader(), "utf8");
 
 For accounts that always use TOTP, you can collapse login and verification into one call:
 
-```ts
+```js
 import { VRChatSessionClient } from "vrchat-api-typescript";
 
 const session = new VRChatSessionClient();
 const user = await session.loginWithTotp({
-  username: process.env.VRCHAT_USERNAME!,
-  password: process.env.VRCHAT_PASSWORD!,
-  totpCode: process.env.VRCHAT_TOTP_CODE!,
+  username: process.env.VRCHAT_USERNAME,
+  password: process.env.VRCHAT_PASSWORD,
+  totpCode: process.env.VRCHAT_TOTP_CODE,
   userAgent: "my-vrchat-tool/1.0.0 (+mailto:you@example.com)",
 });
 
@@ -242,14 +243,14 @@ console.log(user.displayName);
 
 If you store the base32 TOTP secret instead of the current 6-digit code, you can generate the OTP dynamically:
 
-```ts
+```js
 import { VRChatSessionClient } from "vrchat-api-typescript";
 
 const session = new VRChatSessionClient();
 const user = await session.loginWithTotpSecret({
-  username: process.env.VRCHAT_USERNAME!,
-  password: process.env.VRCHAT_PASSWORD!,
-  totpSecret: process.env.VRCHAT_TOTP_SECRET!,
+  username: process.env.VRCHAT_USERNAME,
+  password: process.env.VRCHAT_PASSWORD,
+  totpSecret: process.env.VRCHAT_TOTP_SECRET,
   userAgent: "my-vrchat-tool/1.0.0 (+mailto:you@example.com)",
 });
 
@@ -258,10 +259,10 @@ console.log(user.displayName);
 
 You can also generate a code yourself and pass it wherever needed:
 
-```ts
+```js
 import { generateTotpCode } from "vrchat-api-typescript";
 
-const code = generateTotpCode(process.env.VRCHAT_TOTP_SECRET!);
+const code = generateTotpCode(process.env.VRCHAT_TOTP_SECRET);
 ```
 
 ## Session runtime behavior
@@ -283,7 +284,7 @@ Other API methods use per-method cooldowns. If `session.api.getGroup()` receives
 
 If you want the raw generated-client style result instead of exceptions, call methods with `throwOnError: false`:
 
-```ts
+```js
 const result = await session.api.getGroup({
   groupId: "grp_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   throwOnError: false,

@@ -19,6 +19,21 @@ export const DEFAULT_VRCHAT_API_BASE_URL = "https://api.vrchat.cloud/api/1";
 export const DEFAULT_VRCHAT_USER_AGENT = `vrchat-api-typescript/${VRCHAT_SPEC_VERSION} (+https://www.npmjs.com/package/vrchat-api-typescript)`;
 
 type SessionFetch = typeof fetch;
+type AuthState = "authenticated" | "pending2fa" | "unauthenticated" | "unknown";
+type ApiMethod = (options?: Record<string, unknown>) => Promise<unknown>;
+type ApiFieldsResult<TData = unknown, TError = unknown> =
+  | {
+      data: TData;
+      error?: undefined;
+      request: Request;
+      response: Response;
+    }
+  | {
+      data?: undefined;
+      error: TError;
+      request: Request;
+      response: Response;
+    };
 
 type StoredCookie = {
   domain?: string;
@@ -73,8 +88,51 @@ export interface VRChatTwoFactorOptions {
   type: TwoFactorAuthType;
 }
 
+export interface VRChatErrorPayload {
+  error: {
+    message?: string;
+    retry_after?: number;
+    retry_after_ms?: number;
+    status_code: number;
+    [key: string]: unknown;
+  };
+}
+
+export class VRChatApiError<TBody = unknown> extends Error {
+  readonly body: TBody;
+  readonly request: Request;
+  readonly response: Response;
+  readonly retryAfter?: number;
+  readonly retryAfterMs?: number;
+  readonly status: number;
+
+  constructor({
+    body,
+    request,
+    response,
+    retryAfter,
+    retryAfterMs,
+  }: {
+    body: TBody;
+    request: Request;
+    response: Response;
+    retryAfter?: number;
+    retryAfterMs?: number;
+  }) {
+    super(getErrorMessage(body, response.status));
+    this.name = "VRChatApiError";
+    this.body = body;
+    this.request = request;
+    this.response = response;
+    this.retryAfter = retryAfter;
+    this.retryAfterMs = retryAfterMs;
+    this.status = response.status;
+  }
+}
+
 const COOKIE_PAIR_SEPARATOR = "; ";
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const LOGIN_RATE_LIMIT_BUFFER_MS = 3000;
 
 const splitCookieHeader = (cookieHeader: string): Array<string> => {
   return cookieHeader
@@ -358,6 +416,133 @@ const setUserAgentHeader = (headers: Headers, userAgent?: string): void => {
   }
 };
 
+const sleep = async (milliseconds: number): Promise<void> => {
+  if (milliseconds <= 0) {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+};
+
+const getErrorMessage = (body: unknown, fallbackStatus: number): string => {
+  if (
+    typeof body === "object" &&
+    body &&
+    "error" in body &&
+    typeof body.error === "object" &&
+    body.error &&
+    "message" in body.error &&
+    typeof body.error.message === "string"
+  ) {
+    return body.error.message;
+  }
+
+  if (typeof body === "string" && body.trim()) {
+    return body;
+  }
+
+  return `VRChat API request failed with status ${fallbackStatus}.`;
+};
+
+const getRetryAfterMilliseconds = (response: Response): number | undefined => {
+  const retryAfterHeader = response.headers.get("Retry-After");
+  if (!retryAfterHeader) {
+    return undefined;
+  }
+
+  const seconds = Number.parseInt(retryAfterHeader, 10);
+  if (!Number.isNaN(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+
+  const timestamp = Date.parse(retryAfterHeader);
+  if (Number.isNaN(timestamp)) {
+    return undefined;
+  }
+
+  return Math.max(0, timestamp - Date.now());
+};
+
+const createErrorPayload = (
+  status: number,
+  message: string,
+  extras: Record<string, unknown> = {},
+): VRChatErrorPayload => ({
+  error: {
+    message,
+    status_code: status,
+    ...extras,
+  },
+});
+
+const mergeRetryAfterIntoError = (
+  body: unknown,
+  status: number,
+  retryAfterMs?: number,
+): unknown => {
+  if (retryAfterMs === undefined) {
+    return body;
+  }
+
+  const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
+
+  if (typeof body === "object" && body && "error" in body) {
+    const error = body.error;
+    if (typeof error === "object" && error) {
+      return {
+        ...body,
+        error: {
+          ...error,
+          retry_after: retryAfter,
+          retry_after_ms: retryAfterMs,
+          status_code:
+            "status_code" in error && typeof error.status_code === "number"
+              ? error.status_code
+              : status,
+        },
+      };
+    }
+  }
+
+  return createErrorPayload(status, getErrorMessage(body, status), {
+    retry_after: retryAfter,
+    retry_after_ms: retryAfterMs,
+  });
+};
+
+const createSyntheticRequest = (baseUrl: string, methodName: string): Request =>
+  new Request(`${baseUrl.replace(/\/$/, "")}/__local__/${methodName}`);
+
+const createSyntheticResponse = (
+  status: number,
+  body: unknown,
+  retryAfterMs?: number,
+): Response => {
+  const headers = new Headers({
+    "Content-Type": "application/json",
+  });
+
+  if (retryAfterMs !== undefined) {
+    headers.set(
+      "Retry-After",
+      String(Math.max(1, Math.ceil(retryAfterMs / 1000))),
+    );
+  }
+
+  return new Response(JSON.stringify(body), {
+    headers,
+    status,
+  });
+};
+
+const isErrorResult = <TData, TError>(
+  result: ApiFieldsResult<TData, TError>,
+): result is Extract<ApiFieldsResult<TData, TError>, { error: TError }> => {
+  return result.error !== undefined;
+};
+
 const decodeBase32 = (value: string): Buffer => {
   const normalizedValue = value.toUpperCase().replace(/[^A-Z2-7]/g, "");
   if (!normalizedValue) {
@@ -442,7 +627,12 @@ export const isCurrentUser = (
 export class VRChatSessionClient {
   public readonly api: GeneratedVRChatApiClient;
 
+  private authState: AuthState;
+  private readonly apiCooldowns = new Map<string, number>();
   private readonly cookieJar = new CookieJar();
+  private readonly rawApi: GeneratedVRChatApiClient;
+  private loginCooldownUntil = 0;
+  private readonly sessionBaseUrl: string;
 
   constructor(options: VRChatSessionClientOptions = {}) {
     const {
@@ -463,6 +653,9 @@ export class VRChatSessionClient {
       this.cookieJar.importObject(cookies);
     }
 
+    this.sessionBaseUrl = baseUrl;
+    this.authState = this.getAuthCookie() ? "unknown" : "unauthenticated";
+
     const defaultHeaders = new Headers(headers);
     if (!defaultHeaders.has("User-Agent")) {
       defaultHeaders.set("User-Agent", userAgent);
@@ -475,7 +668,8 @@ export class VRChatSessionClient {
       headers: defaultHeaders,
     });
 
-    this.api = new GeneratedVRChatApiClient({ client });
+    this.rawApi = new GeneratedVRChatApiClient({ client });
+    this.api = this.createApiProxy();
   }
 
   clearCookies(): void {
@@ -571,6 +765,7 @@ export class VRChatSessionClient {
   async logout(): Promise<void> {
     await this.api.logout(defaultDataOptions);
     this.clearCookies();
+    this.authState = "unauthenticated";
   }
 
   async verify2Fa(code: string): Promise<Verify2FaResponse> {
@@ -625,6 +820,327 @@ export class VRChatSessionClient {
         return this.verify2Fa(options.code);
       default:
         throw new Error(`Unsupported 2FA type: ${String(options.type)}`);
+    }
+  }
+
+  private createApiProxy(): GeneratedVRChatApiClient {
+    return new Proxy(this.rawApi, {
+      get: (target, property, receiver) => {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof property !== "string" || typeof value !== "function") {
+          return value;
+        }
+
+        return (options?: Record<string, unknown>) =>
+          this.invokeApiMethod(property, value.bind(target), options);
+      },
+    }) as GeneratedVRChatApiClient;
+  }
+
+  private async callRawApi(
+    method: ApiMethod,
+    options?: Record<string, unknown>,
+  ): Promise<ApiFieldsResult> {
+    return method({
+      ...(options ?? {}),
+      responseStyle: "fields",
+      throwOnError: false,
+    }) as Promise<ApiFieldsResult>;
+  }
+
+  private createImmediateErrorResult(
+    methodName: string,
+    status: number,
+    body: unknown,
+    retryAfterMs?: number,
+  ): ApiFieldsResult {
+    const request = createSyntheticRequest(this.sessionBaseUrl, methodName);
+    const response = createSyntheticResponse(status, body, retryAfterMs);
+
+    return {
+      data: undefined,
+      error: body,
+      request,
+      response,
+    };
+  }
+
+  private throwApiError(result: ApiFieldsResult, retryAfterMs?: number): never {
+    throw new VRChatApiError({
+      body: isErrorResult(result) ? result.error : undefined,
+      request: result.request,
+      response: result.response,
+      retryAfter: retryAfterMs
+        ? Math.max(1, Math.ceil(retryAfterMs / 1000))
+        : undefined,
+      retryAfterMs,
+    });
+  }
+
+  private finalizeResult(
+    methodName: string,
+    options: Record<string, unknown> | undefined,
+    result: ApiFieldsResult,
+  ): ApiFieldsResult {
+    if (!isErrorResult(result)) {
+      this.updateAuthStateFromSuccess(methodName, result.data);
+      return result;
+    }
+
+    this.updateAuthStateFromError(result.response.status);
+
+    if (options?.throwOnError) {
+      this.throwApiError(result, getRetryAfterMilliseconds(result.response));
+    }
+
+    return result;
+  }
+
+  private getApiCooldownResult(
+    methodName: string,
+    options: Record<string, unknown> | undefined,
+  ): ApiFieldsResult | never | undefined {
+    const cooldownUntil = this.apiCooldowns.get(methodName);
+    if (!cooldownUntil || cooldownUntil <= Date.now()) {
+      this.apiCooldowns.delete(methodName);
+      return undefined;
+    }
+
+    const retryAfterMs = cooldownUntil - Date.now();
+    const body = mergeRetryAfterIntoError(
+      createErrorPayload(429, `Rate limited for ${methodName}.`),
+      429,
+      retryAfterMs,
+    );
+    const result = this.createImmediateErrorResult(
+      methodName,
+      429,
+      body,
+      retryAfterMs,
+    );
+
+    if (options?.throwOnError) {
+      this.throwApiError(result, retryAfterMs);
+    }
+
+    return result;
+  }
+
+  private async ensureAuthenticated(
+    methodName: string,
+    options: Record<string, unknown> | undefined,
+  ): Promise<ApiFieldsResult | undefined> {
+    if (this.authState === "authenticated") {
+      return undefined;
+    }
+
+    if (this.authState === "pending2fa") {
+      const result = this.createImmediateErrorResult(
+        methodName,
+        401,
+        createErrorPayload(
+          401,
+          "This VRChat session has not completed 2FA yet. Only login methods may be called.",
+        ),
+      );
+
+      if (options?.throwOnError) {
+        this.throwApiError(result);
+      }
+
+      return result;
+    }
+
+    if (!this.getAuthCookie()) {
+      this.authState = "unauthenticated";
+
+      const result = this.createImmediateErrorResult(
+        methodName,
+        401,
+        createErrorPayload(
+          401,
+          "This VRChat session is not authenticated. Call login() first.",
+        ),
+      );
+
+      if (options?.throwOnError) {
+        this.throwApiError(result);
+      }
+
+      return result;
+    }
+
+    if (this.authState === "unknown") {
+      const verificationResult = await this.callRawApi(
+        this.rawApi.verifyAuthToken.bind(this.rawApi),
+      );
+
+      if (!isErrorResult(verificationResult)) {
+        this.authState = "authenticated";
+        return undefined;
+      }
+
+      if (verificationResult.response.status === 401) {
+        this.authState = "unauthenticated";
+
+        const result = this.createImmediateErrorResult(
+          methodName,
+          401,
+          verificationResult.error,
+        );
+
+        if (options?.throwOnError) {
+          this.throwApiError(result);
+        }
+
+        return result;
+      }
+
+      const retryAfterMs = getRetryAfterMilliseconds(
+        verificationResult.response,
+      );
+      const body = mergeRetryAfterIntoError(
+        verificationResult.error,
+        verificationResult.response.status,
+        retryAfterMs,
+      );
+      const result = this.createImmediateErrorResult(
+        methodName,
+        verificationResult.response.status,
+        body,
+        retryAfterMs,
+      );
+
+      if (options?.throwOnError) {
+        this.throwApiError(result, retryAfterMs);
+      }
+
+      return result;
+    }
+
+    return undefined;
+  }
+
+  private isLoginApiCall(
+    methodName: string,
+    options?: Record<string, unknown>,
+  ): boolean {
+    if (
+      methodName === "verify2Fa" ||
+      methodName === "verify2FaEmailCode" ||
+      methodName === "verifyRecoveryCode"
+    ) {
+      return true;
+    }
+
+    if (methodName !== "getCurrentUser") {
+      return false;
+    }
+
+    return new Headers(options?.headers as RequestInit["headers"]).has(
+      "Authorization",
+    );
+  }
+
+  private async invokeApiMethod(
+    methodName: string,
+    method: ApiMethod,
+    options?: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (this.isLoginApiCall(methodName, options)) {
+      return this.invokeLoginApiMethod(methodName, method, options);
+    }
+
+    const authResult = await this.ensureAuthenticated(methodName, options);
+    if (authResult) {
+      return authResult;
+    }
+
+    const cooldownResult = this.getApiCooldownResult(methodName, options);
+    if (cooldownResult) {
+      return cooldownResult;
+    }
+
+    const result = await this.callRawApi(method, options);
+    if (isErrorResult(result) && result.response.status === 429) {
+      const retryAfterMs = getRetryAfterMilliseconds(result.response) ?? 0;
+      this.apiCooldowns.set(methodName, Date.now() + retryAfterMs);
+      const body = mergeRetryAfterIntoError(result.error, 429, retryAfterMs);
+      const immediateResult = this.createImmediateErrorResult(
+        methodName,
+        429,
+        body,
+        retryAfterMs,
+      );
+
+      if (options?.throwOnError) {
+        this.throwApiError(immediateResult, retryAfterMs);
+      }
+
+      return immediateResult;
+    }
+
+    return this.finalizeResult(methodName, options, result);
+  }
+
+  private async invokeLoginApiMethod(
+    methodName: string,
+    method: ApiMethod,
+    options?: Record<string, unknown>,
+  ): Promise<unknown> {
+    while (true) {
+      const waitMs = this.loginCooldownUntil - Date.now();
+      if (waitMs > 0) {
+        await sleep(waitMs);
+      }
+
+      const result = await this.callRawApi(method, options);
+      if (!isErrorResult(result) || result.response.status !== 429) {
+        return this.finalizeResult(methodName, options, result);
+      }
+
+      const retryAfterMs =
+        (getRetryAfterMilliseconds(result.response) ?? 0) +
+        LOGIN_RATE_LIMIT_BUFFER_MS;
+      this.loginCooldownUntil = Date.now() + retryAfterMs;
+      await sleep(retryAfterMs);
+    }
+  }
+
+  private updateAuthStateFromError(status: number): void {
+    if (status === 401) {
+      this.authState = "unauthenticated";
+    }
+  }
+
+  private updateAuthStateFromSuccess(methodName: string, data: unknown): void {
+    if (methodName === "logout") {
+      this.authState = "unauthenticated";
+      return;
+    }
+
+    if (methodName === "getCurrentUser") {
+      this.authState = isCurrentUser(data as GetCurrentUserResponse)
+        ? "authenticated"
+        : "pending2fa";
+      return;
+    }
+
+    if (
+      (methodName === "verify2Fa" ||
+        methodName === "verify2FaEmailCode" ||
+        methodName === "verifyRecoveryCode") &&
+      typeof data === "object" &&
+      data &&
+      "verified" in data &&
+      data.verified === true
+    ) {
+      this.authState = "authenticated";
+      return;
+    }
+
+    if (methodName === "verifyAuthToken") {
+      this.authState = "authenticated";
     }
   }
 }
