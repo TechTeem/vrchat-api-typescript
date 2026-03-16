@@ -39,10 +39,6 @@ const totpSecret = process.env.VRCHAT_TOTP_SECRET;
 const userAgent =
   "vrchat-api-typescript-example/1.0.0 (+https://github.com/ferdyy/vrchat-api-typescript)";
 
-if (!username || !password) {
-  throw new Error("VRCHAT_USERNAME and VRCHAT_PASSWORD are required.");
-}
-
 const cachedCookies = await readCookieCache();
 const session = new VRChatSessionClient({ cookies: cachedCookies });
 
@@ -56,6 +52,12 @@ if (session.hasSession()) {
   } catch {
     session.clearCookies();
   }
+}
+
+if (!username || !password) {
+  throw new Error(
+    "VRCHAT_USERNAME and VRCHAT_PASSWORD are required when no valid cached cookies are available.",
+  );
 }
 
 const loginResult = await session.login({ username, password, userAgent });

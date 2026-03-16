@@ -699,6 +699,11 @@ export class VRChatSessionClient {
   }
 
   async login(options: VRChatLoginOptions): Promise<GetCurrentUserResponse> {
+    const restoredSession = await this.tryReuseCookieSession();
+    if (restoredSession) {
+      return restoredSession;
+    }
+
     const headers = new Headers(options.headers);
     setUserAgentHeader(headers, options.userAgent);
     headers.set(
@@ -835,6 +840,28 @@ export class VRChatSessionClient {
           this.invokeApiMethod(property, value.bind(target), options);
       },
     }) as GeneratedVRChatApiClient;
+  }
+
+  private async tryReuseCookieSession(): Promise<
+    GetCurrentUserResponse | undefined
+  > {
+    if (!this.getAuthCookie()) {
+      return undefined;
+    }
+
+    try {
+      return await this.getCurrentUser();
+    } catch (error) {
+      if (!(error instanceof VRChatApiError) || error.status !== 401) {
+        throw error;
+      }
+
+      // Clear stale cookies so the fallback credential login can establish
+      // a fresh session without the old auth cookie taking precedence.
+      this.clearCookies();
+      this.authState = "unauthenticated";
+      return undefined;
+    }
   }
 
   private async callRawApi(

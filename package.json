@@ -1,6 +1,6 @@
 {
   "name": "vrchat-api-typescript",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TypeScript SDK and type definitions generated from the VRChat API OpenAPI specification.",
   "author": {
     "name": "Ferdinand Lim"

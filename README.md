@@ -139,6 +139,8 @@ console.log(user.data.displayName);
 
 The package also includes a handwritten session wrapper for login, cookie persistence, and 2FA completion.
 
+If you restore cookies before calling `login()`, `loginWithTotp()`, or `loginWithTotpSecret()`, the session client now tries the existing auth cookie first and only falls back to username/password login when that cookie is missing or no longer valid.
+
 VRChat expects a descriptive `User-Agent`. The session client now sends one by default, but for production usage you should set your own app-specific value.
 
 ```ts
@@ -276,6 +278,8 @@ Non-login API calls are guarded locally. If the session has no valid auth state 
 - `verify2Fa()`
 - `verify2FaEmailCode()`
 - `verifyRecoveryCode()`
+
+If an `auth` cookie has already been restored into the session, those login helpers reuse that cookie-backed session first. A new credential-based login is only attempted after the stored cookie is confirmed invalid.
 
 Login-related requests handle `429` automatically. When VRChat responds with `Retry-After`, the client waits for that duration plus a small safety buffer and then retries the login flow for that instance.
 
