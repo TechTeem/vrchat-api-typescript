@@ -227,6 +227,77 @@ if (existsSync(cookieHeaderPath)) {
 writeFileSync(cookieHeaderPath, session.getCookieHeader(), "utf8");
 ```
 
+## Websocket pipeline
+
+The package now exposes the VRChat pipeline websocket for notifications and other realtime events.
+
+You can use the standalone websocket client directly if you already have an `auth` cookie value:
+
+```js
+import { VRChatWebsocketClient } from "vrchat-api-typescript";
+
+const websocket = new VRChatWebsocketClient({
+  authToken: process.env.VRCHAT_AUTH_COOKIE,
+  autoReconnect: true,
+});
+
+websocket.on("notification", (payload) => {
+  console.log("notification", payload);
+});
+
+websocket.on("message", (message) => {
+  console.log(message.type, message.content);
+});
+
+await websocket.connect();
+```
+
+If you are already using `VRChatSessionClient`, reuse the same login session and auth cookie:
+
+```js
+import { VRChatSessionClient } from "vrchat-api-typescript";
+
+const session = new VRChatSessionClient({
+  label: "main-account",
+  metadata: { shard: "alpha" },
+});
+
+await session.loginWithTotp({
+  username: process.env.VRCHAT_USERNAME,
+  password: process.env.VRCHAT_PASSWORD,
+  totpCode: process.env.VRCHAT_TOTP_CODE,
+});
+
+const websocket = await session.connectWebsocket({
+  bindNotificationHandlers: true,
+});
+const identity = await session.resolveIdentity();
+
+console.log(identity.id, identity.displayName, identity.label);
+console.log(websocket.label, websocket.metadata);
+
+websocket.on("notification", (payload) => {
+  console.log("notification", payload);
+});
+
+websocket.on("message", (message) => {
+  console.log(message.type, message.content);
+});
+```
+
+For multi-account apps, each `VRChatSessionClient` keeps its own cached authenticated user and websocket instance. Use `session.currentIdentity`, `await session.resolveIdentity()`, `session.authenticatedUserId`, `session.authenticatedDisplayName`, plus optional `label` and `metadata` to tell instances apart without maintaining a separate lookup table.
+
+If you want the SDK to automatically react to websocket notification directives, call `session.connectWebsocket({ bindNotificationHandlers: true })` or `session.bindWebsocketNotificationHandlers()`. That will translate `see-notification`, `hide-notification`, and `clear-notification` websocket messages into the matching REST calls.
+
+Every incoming pipeline packet is emitted twice:
+
+- `message`: receives `{ type, content, rawContent, receivedAt }`
+- `<type>`: the packet's `type` string is emitted as an event name with the parsed content payload
+
+That means you can subscribe to specific event types such as `notification`, while still keeping a catch-all listener for anything else the pipeline sends.
+
+The library also includes typed event names for TypeScript users covering the common documented pipeline events, including notification, notification-v2, friend, user, and group updates.
+
 For accounts that always use TOTP, you can collapse login and verification into one call:
 
 ```js

@@ -2,10 +2,25 @@ import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
 
 import {
+  type AcceptFriendRequestResponse,
+  type AcknowledgeNotificationV2Response,
+  type ClearNotificationsResponse,
   VRChatApiClient as GeneratedVRChatApiClient,
   type CurrentUser,
+  type DeleteNotificationResponse,
+  type DeleteNotificationV2Response,
   type GetCurrentUserResponse,
+  type InviteResponse,
+  type MarkNotificationAsReadResponse,
+  type NotificationId,
+  type NotificationV2ResponseType,
+  type ReplyNotificationV2Request,
+  type ReplyNotificationV2Response,
   type RequiresTwoFactorAuth,
+  type RespondInviteResponse,
+  type RespondInviteWithPhotoResponse,
+  type RespondNotificationV2Request,
+  type RespondNotificationV2Response,
   type TwoFactorAuthType,
   type Verify2FaEmailCodeResponse,
   type Verify2FaResponse,
@@ -14,6 +29,12 @@ import {
 } from "./generated";
 import { createClient, type Config } from "./generated/client";
 import { VRCHAT_SPEC_VERSION } from "./spec-meta";
+import {
+  VRChatWebsocketClient,
+  type VRChatWebsocketClientOptions,
+  type VRChatWebsocketKnownMessage,
+  type VRChatWebsocketMessage,
+} from "./websocket";
 
 export const DEFAULT_VRCHAT_API_BASE_URL = "https://api.vrchat.cloud/api/1";
 export const DEFAULT_VRCHAT_USER_AGENT = `vrchat-api-typescript/${VRCHAT_SPEC_VERSION} (+https://www.npmjs.com/package/vrchat-api-typescript)`;
@@ -48,6 +69,28 @@ type StoredCookie = {
 
 export type VRChatSessionCookies = Record<string, string>;
 
+export type VRChatClientMetadata = Record<string, unknown>;
+
+export interface VRChatConnectWebsocketOptions {
+  bindNotificationHandlers?: boolean;
+}
+
+export interface VRChatBindWebsocketNotificationHandlersOptions {
+  onError?: (
+    error: Error,
+    message: VRChatWebsocketNotificationDirectiveMessage,
+  ) => void;
+}
+
+export interface VRChatSessionIdentity {
+  displayName?: CurrentUser["displayName"];
+  id?: CurrentUser["id"];
+  isAuthenticated: boolean;
+  label?: string;
+  metadata?: Readonly<VRChatClientMetadata>;
+  username?: CurrentUser["username"];
+}
+
 export interface VRChatSessionClientOptions extends Omit<
   Config,
   "baseUrl" | "fetch" | "headers"
@@ -57,7 +100,10 @@ export interface VRChatSessionClientOptions extends Omit<
   cookies?: VRChatSessionCookies;
   fetch?: SessionFetch;
   headers?: RequestInit["headers"];
+  label?: string;
+  metadata?: VRChatClientMetadata;
   userAgent?: string;
+  websocket?: Omit<VRChatWebsocketClientOptions, "authToken">;
 }
 
 export interface VRChatLoginOptions {
@@ -97,6 +143,31 @@ export interface VRChatErrorPayload {
     [key: string]: unknown;
   };
 }
+
+export interface VRChatNotificationV2RespondOptions {
+  notificationId: NotificationId;
+  responseData?: string;
+  responseType: NotificationV2ResponseType;
+}
+
+export interface VRChatNotificationV2ReplyOptions {
+  body: ReplyNotificationV2Request;
+  notificationId: NotificationId;
+}
+
+export interface VRChatInviteNotificationResponseOptions {
+  notificationId: NotificationId;
+  responseSlot: InviteResponse["responseSlot"];
+}
+
+export interface VRChatInviteNotificationPhotoResponseOptions extends VRChatInviteNotificationResponseOptions {
+  image: Blob | File;
+}
+
+type VRChatWebsocketNotificationDirectiveMessage = Pick<
+  VRChatWebsocketKnownMessage | VRChatWebsocketMessage,
+  "content" | "type"
+>;
 
 export class VRChatApiError<TBody = unknown> extends Error {
   readonly body: TBody;
@@ -624,15 +695,171 @@ export const isCurrentUser = (
   return !isTwoFactorChallenge(value);
 };
 
+export class VRChatNotificationClient {
+  constructor(private readonly session: VRChatSessionClient) {}
+
+  async acceptFriendRequest(
+    notificationId: NotificationId,
+  ): Promise<AcceptFriendRequestResponse> {
+    return unwrapData(
+      await this.session.api.acceptFriendRequest({
+        ...defaultDataOptions,
+        path: { notificationId },
+      }),
+    );
+  }
+
+  async acknowledgeV2(
+    notificationId: NotificationId,
+  ): Promise<AcknowledgeNotificationV2Response> {
+    return unwrapData(
+      await this.session.api.acknowledgeNotificationV2({
+        ...defaultDataOptions,
+        path: { notificationId },
+      }),
+    );
+  }
+
+  async clearAll(): Promise<ClearNotificationsResponse> {
+    return unwrapData(
+      await this.session.api.clearNotifications(defaultDataOptions),
+    );
+  }
+
+  async deleteV2(
+    notificationId: NotificationId,
+  ): Promise<DeleteNotificationV2Response> {
+    return unwrapData(
+      await this.session.api.deleteNotificationV2({
+        ...defaultDataOptions,
+        path: { notificationId },
+      }),
+    );
+  }
+
+  async handleWebsocketMessage(
+    message: VRChatWebsocketNotificationDirectiveMessage,
+  ): Promise<
+    | ClearNotificationsResponse
+    | DeleteNotificationResponse
+    | MarkNotificationAsReadResponse
+    | undefined
+  > {
+    switch (message.type) {
+      case "clear-notification":
+        return this.clearAll();
+      case "hide-notification":
+        if (typeof message.content !== "string") {
+          return undefined;
+        }
+        return this.hide(message.content);
+      case "see-notification":
+        if (typeof message.content !== "string") {
+          return undefined;
+        }
+        return this.markAsRead(message.content);
+      default:
+        return undefined;
+    }
+  }
+
+  async hide(
+    notificationId: NotificationId,
+  ): Promise<DeleteNotificationResponse> {
+    return unwrapData(
+      await this.session.api.deleteNotification({
+        ...defaultDataOptions,
+        path: { notificationId },
+      }),
+    );
+  }
+
+  async markAsRead(
+    notificationId: NotificationId,
+  ): Promise<MarkNotificationAsReadResponse> {
+    return unwrapData(
+      await this.session.api.markNotificationAsRead({
+        ...defaultDataOptions,
+        path: { notificationId },
+      }),
+    );
+  }
+
+  async replyV2(
+    options: VRChatNotificationV2ReplyOptions,
+  ): Promise<ReplyNotificationV2Response> {
+    return unwrapData(
+      await this.session.api.replyNotificationV2({
+        ...defaultDataOptions,
+        body: options.body,
+        path: { notificationId: options.notificationId },
+      }),
+    );
+  }
+
+  async respondInvite(
+    options: VRChatInviteNotificationResponseOptions,
+  ): Promise<RespondInviteResponse> {
+    return unwrapData(
+      await this.session.api.respondInvite({
+        ...defaultDataOptions,
+        body: { responseSlot: options.responseSlot },
+        path: { notificationId: options.notificationId },
+      }),
+    );
+  }
+
+  async respondInviteWithPhoto(
+    options: VRChatInviteNotificationPhotoResponseOptions,
+  ): Promise<RespondInviteWithPhotoResponse> {
+    return unwrapData(
+      await this.session.api.respondInviteWithPhoto({
+        ...defaultDataOptions,
+        body: {
+          data: { responseSlot: options.responseSlot },
+          image: options.image,
+        },
+        path: { notificationId: options.notificationId },
+      }),
+    );
+  }
+
+  async respondV2(
+    options: VRChatNotificationV2RespondOptions,
+  ): Promise<RespondNotificationV2Response> {
+    const body: RespondNotificationV2Request = {
+      responseType: options.responseType,
+    };
+
+    if (options.responseData !== undefined) {
+      body.responseData = options.responseData;
+    }
+
+    return unwrapData(
+      await this.session.api.respondNotificationV2({
+        ...defaultDataOptions,
+        body,
+        path: { notificationId: options.notificationId },
+      }),
+    );
+  }
+}
+
 export class VRChatSessionClient {
   public readonly api: GeneratedVRChatApiClient;
+  public readonly label?: string;
+  public readonly metadata?: Readonly<VRChatClientMetadata>;
+  public readonly notifications: VRChatNotificationClient;
+  public readonly websocket: VRChatWebsocketClient;
 
+  private authenticatedUser?: CurrentUser;
   private authState: AuthState;
   private readonly apiCooldowns = new Map<string, number>();
   private readonly cookieJar = new CookieJar();
   private readonly rawApi: GeneratedVRChatApiClient;
   private loginCooldownUntil = 0;
   private readonly sessionBaseUrl: string;
+  private websocketNotificationUnsubscribe?: () => void;
 
   constructor(options: VRChatSessionClientOptions = {}) {
     const {
@@ -641,7 +868,10 @@ export class VRChatSessionClient {
       cookies,
       fetch: fetchImpl = globalThis.fetch,
       headers,
+      label,
+      metadata,
       userAgent = DEFAULT_VRCHAT_USER_AGENT,
+      websocket,
       ...config
     } = options;
 
@@ -655,6 +885,8 @@ export class VRChatSessionClient {
 
     this.sessionBaseUrl = baseUrl;
     this.authState = this.getAuthCookie() ? "unknown" : "unauthenticated";
+    this.label = label;
+    this.metadata = metadata ? { ...metadata } : undefined;
 
     const defaultHeaders = new Headers(headers);
     if (!defaultHeaders.has("User-Agent")) {
@@ -670,10 +902,54 @@ export class VRChatSessionClient {
 
     this.rawApi = new GeneratedVRChatApiClient({ client });
     this.api = this.createApiProxy();
+    this.notifications = new VRChatNotificationClient(this);
+
+    const websocketHeaders = new Headers(defaultHeaders);
+    for (const [name, value] of new Headers(websocket?.headers).entries()) {
+      websocketHeaders.set(name, value);
+    }
+
+    this.websocket = new VRChatWebsocketClient({
+      ...websocket,
+      authToken: this.getAuthCookie(),
+      headers: websocketHeaders,
+      label: websocket?.label ?? label,
+      metadata: websocket?.metadata ?? metadata,
+    });
   }
 
   clearCookies(): void {
     this.cookieJar.clear();
+    this.clearAuthenticatedUser();
+    this.authState = "unauthenticated";
+    this.syncWebsocketAuth();
+  }
+
+  get authenticatedDisplayName(): CurrentUser["displayName"] | undefined {
+    return this.authenticatedUser?.displayName;
+  }
+
+  get authenticatedUserId(): CurrentUser["id"] | undefined {
+    return this.authenticatedUser?.id;
+  }
+
+  get authenticatedUsername(): CurrentUser["username"] | undefined {
+    return this.authenticatedUser?.username;
+  }
+
+  get currentIdentity(): VRChatSessionIdentity {
+    return {
+      displayName: this.authenticatedDisplayName,
+      id: this.authenticatedUserId,
+      isAuthenticated: Boolean(this.authenticatedUser),
+      label: this.label,
+      metadata: this.metadata,
+      username: this.authenticatedUsername,
+    };
+  }
+
+  get currentUser(): CurrentUser | undefined {
+    return this.authenticatedUser;
   }
 
   exportCookies(): VRChatSessionCookies {
@@ -694,8 +970,90 @@ export class VRChatSessionClient {
     return unwrapData(await this.api.getCurrentUser(defaultDataOptions));
   }
 
+  async connectWebsocket(
+    options: VRChatConnectWebsocketOptions = {},
+  ): Promise<VRChatWebsocketClient> {
+    const authResult = await this.ensureAuthenticated("connectWebsocket", {
+      throwOnError: true,
+    });
+    if (authResult) {
+      throw new Error("Failed to authenticate websocket session.");
+    }
+
+    const authCookie = this.getAuthCookie();
+    if (!authCookie) {
+      throw new Error(
+        "This VRChat session is not authenticated. Call login() first.",
+      );
+    }
+
+    await this.websocket.authenticate(authCookie);
+
+    if (options.bindNotificationHandlers) {
+      this.bindWebsocketNotificationHandlers();
+    }
+
+    return this.websocket;
+  }
+
+  bindWebsocketNotificationHandlers(
+    options: VRChatBindWebsocketNotificationHandlersOptions = {},
+  ): () => void {
+    if (this.websocketNotificationUnsubscribe) {
+      return this.websocketNotificationUnsubscribe;
+    }
+
+    const handleMessage = (
+      message: VRChatWebsocketKnownMessage | VRChatWebsocketMessage,
+    ): void => {
+      void this.notifications.handleWebsocketMessage(message).catch((error) => {
+        const normalizedError =
+          error instanceof Error
+            ? error
+            : new Error("Failed to handle VRChat websocket notification.");
+        options.onError?.(normalizedError, message);
+      });
+    };
+
+    const unsubscribe = (): void => {
+      this.websocket.off("message", handleMessage);
+      if (this.websocketNotificationUnsubscribe === unsubscribe) {
+        this.websocketNotificationUnsubscribe = undefined;
+      }
+    };
+
+    this.websocket.on("message", handleMessage);
+    this.websocketNotificationUnsubscribe = unsubscribe;
+    return unsubscribe;
+  }
+
   hasSession(): boolean {
     return Boolean(this.getAuthCookie());
+  }
+
+  async requireCurrentUser(): Promise<CurrentUser> {
+    if (this.authenticatedUser) {
+      return this.authenticatedUser;
+    }
+
+    const currentUser = await this.getCurrentUser();
+    if (!isCurrentUser(currentUser)) {
+      throw new Error("This VRChat session is not fully authenticated yet.");
+    }
+
+    return currentUser;
+  }
+
+  async resolveIdentity(): Promise<VRChatSessionIdentity> {
+    if (this.hasSession() && !this.authenticatedUser) {
+      try {
+        await this.requireCurrentUser();
+      } catch {
+        return this.currentIdentity;
+      }
+    }
+
+    return this.currentIdentity;
   }
 
   async login(options: VRChatLoginOptions): Promise<GetCurrentUserResponse> {
@@ -757,20 +1115,34 @@ export class VRChatSessionClient {
 
   restoreFromCookieHeader(cookieHeader: string): void {
     this.cookieJar.import(cookieHeader);
+    this.clearAuthenticatedUser();
+    this.authState = this.getAuthCookie() ? "unknown" : "unauthenticated";
+    this.syncWebsocketAuth();
   }
 
   restoreFromCookies(cookies: VRChatSessionCookies): void {
     this.cookieJar.importObject(cookies);
+    this.clearAuthenticatedUser();
+    this.authState = this.getAuthCookie() ? "unknown" : "unauthenticated";
+    this.syncWebsocketAuth();
   }
 
   setAuthCookie(value: string): void {
     this.cookieJar.set({ name: "auth", value });
+    this.clearAuthenticatedUser();
+    this.authState = value ? "unknown" : "unauthenticated";
+    this.syncWebsocketAuth();
   }
 
   async logout(): Promise<void> {
     await this.api.logout(defaultDataOptions);
+    this.clearAuthenticatedUser();
     this.clearCookies();
     this.authState = "unauthenticated";
+  }
+
+  unbindWebsocketNotificationHandlers(): void {
+    this.websocketNotificationUnsubscribe?.();
   }
 
   async verify2Fa(code: string): Promise<Verify2FaResponse> {
@@ -911,10 +1283,12 @@ export class VRChatSessionClient {
   ): ApiFieldsResult {
     if (!isErrorResult(result)) {
       this.updateAuthStateFromSuccess(methodName, result.data);
+      this.syncWebsocketAuth();
       return result;
     }
 
     this.updateAuthStateFromError(result.response.status);
+    this.syncWebsocketAuth();
 
     if (options?.throwOnError) {
       this.throwApiError(result, getRetryAfterMilliseconds(result.response));
@@ -1136,17 +1510,22 @@ export class VRChatSessionClient {
 
   private updateAuthStateFromError(status: number): void {
     if (status === 401) {
+      this.clearAuthenticatedUser();
       this.authState = "unauthenticated";
     }
   }
 
   private updateAuthStateFromSuccess(methodName: string, data: unknown): void {
     if (methodName === "logout") {
+      this.clearAuthenticatedUser();
       this.authState = "unauthenticated";
       return;
     }
 
     if (methodName === "getCurrentUser") {
+      this.authenticatedUser = isCurrentUser(data as GetCurrentUserResponse)
+        ? (data as CurrentUser)
+        : undefined;
       this.authState = isCurrentUser(data as GetCurrentUserResponse)
         ? "authenticated"
         : "pending2fa";
@@ -1169,5 +1548,13 @@ export class VRChatSessionClient {
     if (methodName === "verifyAuthToken") {
       this.authState = "authenticated";
     }
+  }
+
+  private syncWebsocketAuth(): void {
+    this.websocket.setAuthToken(this.getAuthCookie());
+  }
+
+  private clearAuthenticatedUser(): void {
+    this.authenticatedUser = undefined;
   }
 }

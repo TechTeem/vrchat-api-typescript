@@ -1,6 +1,6 @@
 {
   "name": "vrchat-api-typescript",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "TypeScript SDK and type definitions generated from the VRChat API OpenAPI specification.",
   "author": {
     "name": "Ferdinand Lim"
@@ -48,12 +48,17 @@
     "generate": "npm run spec:update && openapi-ts",
     "build": "tsup",
     "example:session": "npm run build && node ./examples/session-login.mjs",
+    "example:websocket": "npm run build && node ./examples/websocket-notifications.mjs",
     "prepack": "npm run generate && npm run build"
   },
   "devDependencies": {
     "@hey-api/openapi-ts": "^0.88.0",
     "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
   }
 }
